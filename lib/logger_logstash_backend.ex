@@ -15,7 +15,6 @@
 ################################################################################
 defmodule LoggerLogstashBackend do
   use GenEvent
-  use Timex
 
   def init({__MODULE__, name}) do
     {:ok, configure(name, [])}
@@ -43,7 +42,9 @@ defmodule LoggerLogstashBackend do
       host: host,
       port: port,
       type: type,
+      version: version,
       metadata: metadata,
+      root_fields: root_fields,
       socket: socket
     }
   ) do
@@ -53,18 +54,18 @@ defmodule LoggerLogstashBackend do
              |> Map.put(:level, to_string(level))
              |> inspect_pids
 
-    {{year, month, day}, {hour, minute, second, milliseconds}} = ts
-    {:ok, ts} = NaiveDateTime.new(
-      year, month, day, hour, minute, second, (milliseconds * 1000)
-    )
-    ts = Timex.to_datetime ts, Timezone.local
-    {:ok, json} = JSX.encode %{
-      type: type,
-      "@timestamp": Timex.format!(ts, "%FT%T%z", :strftime),
-      message: to_string(msg),
-      fields: fields
-    }
-    :gen_udp.send socket, host, port, to_char_list(json)
+    data =
+      root_fields
+      |> Enum.into(%{})
+      |> Map.merge(%{
+        type: type,
+        "@timestamp": logger_datetime_to_iso8601(ts),
+        "@version": version,
+        message: to_string(msg),
+        metadata: fields
+      })
+    {:ok, json} = JSX.encode(data)
+    :gen_udp.send socket, host, port, json
   end
 
   defp configure(name, opts) do
@@ -75,8 +76,10 @@ defmodule LoggerLogstashBackend do
     level = Keyword.get opts, :level, :debug
     metadata = Keyword.get opts, :metadata, []
     type = Keyword.get opts, :type, "elixir"
+    version = Keyword.get opts, :version, 1
     host = Keyword.get opts, :host
     port = Keyword.get opts, :port
+    root_fields = Keyword.get opts, :root_fields, []
     {:ok, socket} = :gen_udp.open 0
     %{
       name: name,
@@ -85,6 +88,8 @@ defmodule LoggerLogstashBackend do
       level: level,
       socket: socket,
       type: type,
+      version: version,
+      root_fields: root_fields,
       metadata: metadata
     }
   end
@@ -98,5 +103,13 @@ defmodule LoggerLogstashBackend do
     Enum.into fields, %{}, fn {key, value} ->
       {key, inspect_pid(value)}
     end
+  end
+
+  defp logger_datetime_to_iso8601({{year, month, day}, {hour, minute, second, milliseconds}}) do
+    {:ok, timestamp} = NaiveDateTime.new(
+      year, month, day, hour, minute, second, (milliseconds * 1000)
+    )
+    timestamp
+    |> NaiveDateTime.to_iso8601()
   end
 end

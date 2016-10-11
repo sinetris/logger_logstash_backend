@@ -16,17 +16,21 @@
 defmodule LoggerLogstashBackendTest do
   use ExUnit.Case, async: false
   require Logger
-  use Timex
 
   @backend {LoggerLogstashBackend, :test}
   Logger.add_backend @backend
 
   setup do
+    Logger.configure(utc_log: true)
     Logger.configure_backend @backend, [
       host: "127.0.0.1",
       port: 10001,
       level: :info,
       type: "some_app",
+      root_fields: [
+        token: "abcd1234",
+        tags: ["test"]
+      ],
       metadata: [
         some_metadata: "go here"
       ]
@@ -35,34 +39,35 @@ defmodule LoggerLogstashBackendTest do
     on_exit fn ->
       :ok = :gen_udp.close socket
     end
-    :ok
+    file_name = __ENV__.file
+    {:ok, %{file_name: file_name}}
   end
 
-  test "can log" do
+  test "can log", %{file_name: file_name} do
     Logger.info "hello world", [key1: "field1"]
+    log_line = __ENV__.line - 1
+    pid = (inspect self)
     json = get_log
     {:ok, data} = JSX.decode json
     assert data["type"] === "some_app"
     assert data["message"] === "hello world"
-    expected = %{
+    expected =  %{
       "function" => "test can log/1",
       "level" => "info",
       "module" => "Elixir.LoggerLogstashBackendTest",
-      "pid" => (inspect self),
+      "pid" => pid,
       "some_metadata" => "go here",
-      "line" => 42,
+      "line" => log_line,
+      "file" => file_name,
       "key1" => "field1"
     }
-    assert contains?(data["fields"], expected)
-    {:ok, ts} = Timex.parse data["@timestamp"], "%FT%T%z", :strftime
-    ts = Timex.to_unix ts
-
-    now = Timex.to_unix Timex.local
-    assert (now - ts) < 1000
+    assert expected == data["metadata"]
   end
 
-  test "can log pids" do
+  test "can log pids", %{file_name: file_name} do
     Logger.info "pid", [pid_key: self]
+    log_line = __ENV__.line - 1
+    pid = (inspect self)
     json = get_log
     {:ok, data} = JSX.decode json
     assert data["type"] === "some_app"
@@ -71,20 +76,39 @@ defmodule LoggerLogstashBackendTest do
       "function" => "test can log pids/1",
       "level" => "info",
       "module" => "Elixir.LoggerLogstashBackendTest",
-      "pid" => (inspect self),
-      "pid_key" => inspect(self),
+      "pid" => pid,
+      "pid_key" => pid,
       "some_metadata" => "go here",
-      "line" => 65
+      "line" => log_line,
+      "file" => file_name
     }
-    assert contains?(data["fields"], expected)
-    {:ok, ts} = Timex.parse data["@timestamp"], "%FT%T%z", :strftime
-    ts = Timex.to_unix ts
-
-    now = Timex.to_unix Timex.local
-    assert (now - ts) < 1000
+    assert expected == data["metadata"]
   end
 
-  test "cant log when minor levels" do
+  test "log timestamp" do
+    Logger.info "logging timestamp"
+    json = get_log
+    {:ok, data} = JSX.decode json
+    {:ok, timestamp} = NaiveDateTime.from_iso8601(data["@timestamp"])
+    assert (DateTime.utc_now() |> DateTime.to_naive |> to_string) > (timestamp |> to_string)
+  end
+
+  test "log version" do
+    Logger.info "log contain @version"
+    json = get_log
+    {:ok, data} = JSX.decode json
+    assert data["@version"] === 1
+  end
+
+  test "log root fields" do
+    Logger.info "log root fields"
+    json = get_log
+    {:ok, data} = JSX.decode json
+    assert data["token"] === "abcd1234"
+    assert data["tags"] === ["test"]
+  end
+
+  test "discard log when minor levels" do
     Logger.debug "hello world", [key1: "field1"]
     :nothing_received = get_log
   end
@@ -94,11 +118,5 @@ defmodule LoggerLogstashBackendTest do
       {:udp, _, _, _, json} -> json
     after 500 -> :nothing_received
     end
-  end
-
-  defp contains?(map1, map2) do
-    Enum.all?(Map.to_list(map2), fn {key, value} ->
-      Map.fetch!(map1, key) == value
-    end)
   end
 end
