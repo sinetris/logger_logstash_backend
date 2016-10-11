@@ -78,7 +78,7 @@ defmodule LoggerLogstashBackend do
     type = Keyword.get opts, :type, "elixir"
     version = Keyword.get opts, :version, 1
     host = Keyword.get opts, :host
-    port = Keyword.get opts, :port
+    port = Keyword.get(opts, :port) |> to_port()
     root_fields = Keyword.get opts, :root_fields, []
     {:ok, socket} = :gen_udp.open 0
     %{
@@ -112,4 +112,8 @@ defmodule LoggerLogstashBackend do
     timestamp
     |> NaiveDateTime.to_iso8601()
   end
+
+  defp to_port(binary)  when is_binary(binary), do: String.to_integer(binary)
+  defp to_port(integer) when is_integer(integer), do: integer
+  defp to_port({:system, env_var}), do: to_port(System.get_env(env_var))
 end
